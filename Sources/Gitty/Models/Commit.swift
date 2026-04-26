@@ -8,6 +8,10 @@ public struct Commit: Sendable, Identifiable, Hashable {
     public let author:     Signature
     public let committer:  Signature
     public let parentIDs:  [OID]
+    public let signature:  CommitSignature?
+
+    /// Whether this commit carries a GPG or SSH signature.
+    public var isSigned: Bool { signature != nil }
 
     /// First line of the commit message.
     public var subject: String {
@@ -40,5 +44,29 @@ public struct Commit: Sendable, Identifiable, Hashable {
             if let p = git_commit_parent_id(pointer, i) { parents.append(OID(raw: p.pointee)) }
         }
         self.parentIDs = parents
+
+        self.signature = Commit.extractSignature(pointer: pointer)
+    }
+
+    private static func extractSignature(pointer: OpaquePointer) -> CommitSignature? {
+        guard let repo = git_commit_owner(pointer), let oidPtr = git_commit_id(pointer) else {
+            return nil
+        }
+        var oid = oidPtr.pointee
+
+        var block = git_buf()
+        var signed = git_buf()
+        defer {
+            git_buf_dispose(&block)
+            git_buf_dispose(&signed)
+        }
+        guard git_commit_extract_signature(&block, &signed, repo, &oid, nil) == 0,
+              let blockPtr = block.ptr, let signedPtr = signed.ptr else {
+            return nil
+        }
+        return CommitSignature(
+            block: String(cString: blockPtr),
+            signedContent: String(cString: signedPtr)
+        )
     }
 }

@@ -23,6 +23,22 @@ final class RepositoryTests: XCTestCase {
         try content.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
     }
 
+    private func headCommitID(in repo: Repository) async throws -> OID {
+        for try await commit in repo.log(limit: 1) {
+            return commit.id
+        }
+        throw GittyError(message: "Could not resolve HEAD")
+    }
+
+    private static func signatureBlock(prefix: String, content: String) -> String {
+        let checksum = content.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
+        return """
+        -----BEGIN \(prefix) SIGNATURE-----
+        test-signature-\(checksum)
+        -----END \(prefix) SIGNATURE-----
+        """
+    }
+
     private let author = Signature(name: "Test", email: "test@gitty.dev")
 
     // MARK: - Initialize / open
@@ -61,6 +77,54 @@ final class RepositoryTests: XCTestCase {
             XCTAssertEqual(commit.author.name, "Test")
             XCTAssertTrue(commit.parentIDs.isEmpty)
             XCTAssertEqual(commit.id.sha.count, 40)
+            XCTAssertFalse(commit.isSigned)
+            XCTAssertNil(commit.signature)
+        }
+    }
+
+    func testCommitWithGPGSignature() async throws {
+        try await withTempDirAsync { dir in
+            let repo = try Repository.initialize(at: dir)
+            try write("hello", to: "a.txt", in: dir)
+            try repo.stage(paths: ["a.txt"])
+
+            let signature: @Sendable (String) -> String = { Self.signatureBlock(prefix: "PGP", content: $0) }
+            let commit = try repo.commit(
+                message: "signed commit",
+                author: author,
+                signing: .gpg(signature)
+            )
+
+            let extracted = try XCTUnwrap(commit.signature)
+            XCTAssertEqual(extracted.block, signature(extracted.signedContent))
+            XCTAssertTrue(commit.isSigned)
+            let headID = try await headCommitID(in: repo)
+            XCTAssertEqual(headID, commit.id)
+        }
+    }
+
+    func testCommitWithSSHSignature() async throws {
+        try await withTempDirAsync { dir in
+            let repo = try Repository.initialize(at: dir)
+            try write("hello", to: "a.txt", in: dir)
+            try repo.stage(paths: ["a.txt"])
+            let parent = try repo.commit(message: "initial commit", author: author)
+
+            try write("hello again", to: "a.txt", in: dir)
+            try repo.stage(paths: ["a.txt"])
+            let signature: @Sendable (String) -> String = { Self.signatureBlock(prefix: "SSH", content: $0) }
+            let commit = try repo.commit(
+                message: "ssh signed commit",
+                author: author,
+                signing: .ssh(signature)
+            )
+
+            let extracted = try XCTUnwrap(commit.signature)
+            XCTAssertEqual(extracted.block, signature(extracted.signedContent))
+            XCTAssertTrue(commit.isSigned)
+            let headID = try await headCommitID(in: repo)
+            XCTAssertEqual(headID, commit.id)
+            XCTAssertEqual(commit.parentIDs, [parent.id])
         }
     }
 
