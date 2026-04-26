@@ -96,12 +96,6 @@ public struct RemoteOperations: Sendable {
         let repo = repository
 
         try await Task.detached(priority: .userInitiated) {
-            var remotePtr: OpaquePointer?
-            guard git_remote_lookup(&remotePtr, repo.pointer, name) == 0, let remotePtr else {
-                throw GittyError(message: "Remote '\(name)' not found")
-            }
-            let box = GitPointer.remote(remotePtr)
-
             var headRef: OpaquePointer?
             guard git_repository_head(&headRef, repo.pointer) == 0, let headRef else {
                 throw GittyError(message: "Could not determine current branch")
@@ -115,27 +109,52 @@ public struct RemoteOperations: Sendable {
             let branch  = String(cString: branchName)
             let refspec = "refs/heads/\(branch):refs/heads/\(branch)"
 
-            let ctx    = RemoteCallbackContext(credentials: credentials)
-            let ctxPtr = Unmanaged.passRetained(ctx).toOpaque()
-            defer { Unmanaged<RemoteCallbackContext>.fromOpaque(ctxPtr).release() }
-
-            var callbacks = git_remote_callbacks()
-            git_remote_init_callbacks(&callbacks, UInt32(GIT_REMOTE_CALLBACKS_VERSION))
-            callbacks.credentials = remoteCredentialCallback
-            callbacks.payload     = ctxPtr
-
-            var pushOpts = git_push_options()
-            git_push_init_options(&pushOpts, UInt32(GIT_PUSH_OPTIONS_VERSION))
-            pushOpts.callbacks = callbacks
-
-            let code: Int32 = refspec.withCString { cStr in
-                var mutableCStr: UnsafeMutablePointer<CChar>? = UnsafeMutablePointer(mutating: cStr)
-                return withUnsafeMutablePointer(to: &mutableCStr) { ptrPtr in
-                    var strArray = git_strarray(strings: ptrPtr, count: 1)
-                    return git_remote_push(box.raw, &strArray, &pushOpts)
-                }
-            }
-            guard code == 0 else { throw GittyError(code: code) }
+            try pushRefspecs([refspec], to: name, credentials: credentials, in: repo)
         }.value
     }
+
+    /// Pushes explicit refspecs to the remote named `name`.
+    public func push(refspecs: [String], to name: String, credentials: Credentials) async throws {
+        let repo = repository
+        try await Task.detached(priority: .userInitiated) {
+            try pushRefspecs(refspecs, to: name, credentials: credentials, in: repo)
+        }.value
+    }
+
+    /// Deletes a branch from the remote named `remoteName`.
+    public func deleteBranch(named branchName: String, from remoteName: String, credentials: Credentials) async throws {
+        try await push(refspecs: [":refs/heads/\(branchName)"], to: remoteName, credentials: credentials)
+    }
+}
+
+private func pushRefspecs(_ refspecs: [String], to name: String, credentials: Credentials, in repo: Repository) throws {
+    guard !refspecs.isEmpty else { return }
+
+    var remotePtr: OpaquePointer?
+    guard git_remote_lookup(&remotePtr, repo.pointer, name) == 0, let remotePtr else {
+        throw GittyError(message: "Remote '\(name)' not found")
+    }
+    let box = GitPointer.remote(remotePtr)
+
+    let ctx    = RemoteCallbackContext(credentials: credentials)
+    let ctxPtr = Unmanaged.passRetained(ctx).toOpaque()
+    defer { Unmanaged<RemoteCallbackContext>.fromOpaque(ctxPtr).release() }
+
+    var callbacks = git_remote_callbacks()
+    git_remote_init_callbacks(&callbacks, UInt32(GIT_REMOTE_CALLBACKS_VERSION))
+    callbacks.credentials = remoteCredentialCallback
+    callbacks.payload     = ctxPtr
+
+    var pushOpts = git_push_options()
+    git_push_init_options(&pushOpts, UInt32(GIT_PUSH_OPTIONS_VERSION))
+    pushOpts.callbacks = callbacks
+
+    let cStrings = refspecs.map { strdup($0) }
+    defer { cStrings.forEach { free($0) } }
+    var mutableStrings = cStrings
+    let code = mutableStrings.withUnsafeMutableBufferPointer { buffer in
+        var strArray = git_strarray(strings: buffer.baseAddress, count: buffer.count)
+        return git_remote_push(box.raw, &strArray, &pushOpts)
+    }
+    guard code == 0 else { throw GittyError(code: code) }
 }
