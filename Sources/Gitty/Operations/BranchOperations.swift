@@ -86,6 +86,17 @@ public struct BranchOperations: Sendable {
         return branch
     }
 
+    /// Updates the upstream tracked by a local branch.
+    public func setUpstream(for name: String, to upstreamName: String?) throws {
+        var refPtr: OpaquePointer?
+        guard git_branch_lookup(&refPtr, repository.pointer, name, GIT_BRANCH_LOCAL) == 0, let refPtr else {
+            throw GittyError(message: "Branch '\(name)' not found")
+        }
+        let ref = GitPointer.reference(refPtr)
+        let code = git_branch_set_upstream(ref.raw, upstreamName)
+        guard code == 0 else { throw GittyError(code: code) }
+    }
+
     // MARK: - Checkout
 
     /// Checks out the given branch, updating HEAD and the working tree.

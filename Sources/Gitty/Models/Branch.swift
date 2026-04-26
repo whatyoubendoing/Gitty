@@ -10,15 +10,18 @@ public struct Branch: Sendable, Identifiable, Hashable {
     /// Full ref name, e.g. `refs/heads/main`.
     public let fullName: String
     public let isRemote: Bool
+    /// The tracked remote branch name for local branches, e.g. `origin/main`.
+    public let upstreamName: String?
     /// OID of the commit this branch points to.
     public let tipID:    OID
 
     // MARK: - Internal
 
-    init(name: String, fullName: String, isRemote: Bool, tipID: OID) {
+    init(name: String, fullName: String, isRemote: Bool, upstreamName: String? = nil, tipID: OID) {
         self.name     = name
         self.fullName = fullName
         self.isRemote = isRemote
+        self.upstreamName = upstreamName
         self.tipID    = tipID
     }
 
@@ -35,9 +38,23 @@ public struct Branch: Sendable, Identifiable, Hashable {
         git_object_free(obj)
         guard let tip else { return nil }
 
+        let isRemote = full.hasPrefix("refs/remotes/")
+        var upstreamName: String?
+        if !isRemote {
+            var upstreamPtr: OpaquePointer?
+            if git_branch_upstream(&upstreamPtr, pointer) == 0, let upstreamPtr {
+                defer { git_reference_free(upstreamPtr) }
+                var upstreamNameCStr: UnsafePointer<CChar>?
+                if git_branch_name(&upstreamNameCStr, upstreamPtr) == 0, let upstreamNameCStr {
+                    upstreamName = String(cString: upstreamNameCStr)
+                }
+            }
+        }
+
         self.name     = String(cString: nameCStr)
         self.fullName = full
-        self.isRemote = full.hasPrefix("refs/remotes/")
+        self.isRemote = isRemote
+        self.upstreamName = upstreamName
         self.tipID    = tip
     }
 }
