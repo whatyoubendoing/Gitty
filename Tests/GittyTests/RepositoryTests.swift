@@ -268,6 +268,48 @@ final class RepositoryTests: XCTestCase {
         }
     }
 
+    func testResetHardRestoresTrackedChanges() throws {
+        try withTempDir { dir in
+            let repo = try Repository.initialize(at: dir)
+            try write("v1", to: "file.txt", in: dir)
+            try repo.stage(paths: ["file.txt"])
+            try repo.commit(message: "init", author: author)
+
+            try write("v2", to: "file.txt", in: dir)
+            try repo.stage(paths: ["file.txt"])
+
+            try repo.reset(.hard)
+
+            let content = try String(contentsOf: dir.appendingPathComponent("file.txt"), encoding: .utf8)
+            XCTAssertEqual(content, "v1")
+            XCTAssertTrue(try repo.status().isEmpty)
+        }
+    }
+
+    func testResetHardLeavesUntrackedFilesForCallerOwnedCleanup() throws {
+        try withTempDir { dir in
+            let repo = try Repository.initialize(at: dir)
+            try write("v1", to: "tracked.txt", in: dir)
+            try repo.stage(paths: ["tracked.txt"])
+            try repo.commit(message: "init", author: author)
+
+            try write("v2", to: "tracked.txt", in: dir)
+            try write("staged new", to: "staged-new.txt", in: dir)
+            try write("untracked", to: "untracked.txt", in: dir)
+            try repo.stage(paths: ["tracked.txt", "staged-new.txt"])
+
+            try repo.reset(.hard)
+
+            let trackedContent = try String(contentsOf: dir.appendingPathComponent("tracked.txt"), encoding: .utf8)
+            XCTAssertEqual(trackedContent, "v1")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("staged-new.txt").path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("untracked.txt").path))
+            let status = try repo.status()
+            XCTAssertEqual(status.count, 1)
+            XCTAssertTrue(status.contains { $0.path == "untracked.txt" && $0.status == .untracked })
+        }
+    }
+
     // MARK: - Status
 
     func testStatusModified() throws {
