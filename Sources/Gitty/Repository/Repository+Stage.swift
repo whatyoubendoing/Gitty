@@ -72,17 +72,8 @@ extension Repository {
         }
 
         if hasHead, let targetObject {
-            let cStrings = paths.map { strdup($0) }
-            defer {
-                for cString in cStrings { free(cString) }
-            }
-
-            let result = cStrings.withUnsafeBufferPointer { buffer -> Int32 in
-                var pathspecs = git_strarray(
-                    strings: UnsafeMutablePointer(mutating: buffer.baseAddress),
-                    count: paths.count
-                )
-                return git_reset_default(pointer, targetObject, &pathspecs)
+            let result = withPathspecs(paths) { pathspecs -> Int32 in
+                git_reset_default(pointer, targetObject, &pathspecs)
             }
 
             guard result == 0 else {
@@ -108,5 +99,20 @@ extension Repository {
             throw GittyError(message: "Could not open repository index")
         }
         return .index(idxPtr)
+    }
+
+    func withPathspecs<Result>(_ paths: [String], _ body: (inout git_strarray) throws -> Result) rethrows -> Result {
+        let cStrings = paths.map { strdup($0) }
+        defer {
+            for cString in cStrings { free(cString) }
+        }
+
+        return try cStrings.withUnsafeBufferPointer { buffer in
+            var pathspecs = git_strarray(
+                strings: UnsafeMutablePointer(mutating: buffer.baseAddress),
+                count: paths.count
+            )
+            return try body(&pathspecs)
+        }
     }
 }

@@ -310,6 +310,66 @@ final class RepositoryTests: XCTestCase {
         }
     }
 
+    func testRestoreRestoresTrackedFileAcrossStagedAndUnstagedChanges() throws {
+        try withTempDir { dir in
+            let repo = try Repository.initialize(at: dir)
+            try write("v1\n", to: "file.txt", in: dir)
+            try repo.stage(paths: ["file.txt"])
+            try repo.commit(message: "init", author: author)
+
+            try write("v2\n", to: "file.txt", in: dir)
+            try repo.stage(paths: ["file.txt"])
+            try write("v3\n", to: "file.txt", in: dir)
+
+            try repo.restore(paths: ["file.txt"])
+
+            let content = try String(contentsOf: dir.appendingPathComponent("file.txt"), encoding: .utf8)
+            XCTAssertEqual(content, "v1\n")
+            XCTAssertTrue(try repo.status().isEmpty)
+        }
+    }
+
+    func testRestoreWithSpecialCharactersOnlyRestoresSelectedPath() throws {
+        try withTempDir { dir in
+            let repo = try Repository.initialize(at: dir)
+
+            let targetPath = "src/app/(app)/project/[projectId]/settings/page.tsx"
+            let siblingPath = "src/app/(app)/project/[projectId]/integrations/page.tsx"
+
+            for path in [targetPath, siblingPath] {
+                let url = dir.appendingPathComponent(path)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try "export default function Page() { return null }\n".write(
+                    to: url,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+
+            try repo.stage(paths: [targetPath, siblingPath])
+            try repo.commit(message: "init", author: author)
+
+            try write("export default function Page() { return 'settings' }\n", to: targetPath, in: dir)
+            try write("export default function Page() { return 'integrations' }\n", to: siblingPath, in: dir)
+
+            try repo.restore(paths: [targetPath])
+
+            let targetContent = try String(
+                contentsOf: dir.appendingPathComponent(targetPath),
+                encoding: .utf8
+            )
+            let siblingContent = try String(
+                contentsOf: dir.appendingPathComponent(siblingPath),
+                encoding: .utf8
+            )
+            XCTAssertEqual(targetContent, "export default function Page() { return null }\n")
+            XCTAssertEqual(siblingContent, "export default function Page() { return 'integrations' }\n")
+        }
+    }
+
     // MARK: - Status
 
     func testStatusModified() throws {
