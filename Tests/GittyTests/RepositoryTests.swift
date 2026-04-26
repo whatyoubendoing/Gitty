@@ -105,6 +105,41 @@ final class RepositoryTests: XCTestCase {
         }
     }
 
+    func testUnstageTrackedFileWithSpecialCharactersOnlyUnstagesSelectedPath() throws {
+        try withTempDir { dir in
+            let repo = try Repository.initialize(at: dir)
+
+            let targetPath = "src/app/(app)/project/[projectId]/settings/page.tsx"
+            let siblingPath = "src/app/(app)/project/[projectId]/integrations/page.tsx"
+
+            for path in [targetPath, siblingPath] {
+                let url = dir.appendingPathComponent(path)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try "export default function Page() { return null }\n".write(
+                    to: url,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+
+            try repo.stage(paths: [targetPath, siblingPath])
+            try repo.commit(message: "init", author: author)
+
+            try write("export default function Page() { return 'settings' }\n", to: targetPath, in: dir)
+            try write("export default function Page() { return 'integrations' }\n", to: siblingPath, in: dir)
+            try repo.stage(paths: [targetPath, siblingPath])
+
+            try repo.unstage(paths: [targetPath])
+
+            let diffAfter = try repo.diff()
+            XCTAssertTrue(diffAfter.contains { $0.newPath == targetPath })
+            XCTAssertFalse(diffAfter.contains { $0.newPath == siblingPath })
+        }
+    }
+
     func testCommitChain() throws {
         try withTempDir { dir in
             let repo = try Repository.initialize(at: dir)

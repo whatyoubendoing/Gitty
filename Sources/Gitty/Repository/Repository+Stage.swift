@@ -65,34 +65,35 @@ extension Repository {
     public func unstage(paths: [String]) throws {
         let idx = try openIndex()
 
-        var headCommitPtr: OpaquePointer?
-        let hasHead = git_revparse_single(&headCommitPtr, pointer, "HEAD") == 0
-
-        for path in paths {
-            if hasHead, let headCommitPtr {
-                var treePtr: OpaquePointer?
-                if git_object_peel(&treePtr, headCommitPtr, GIT_OBJECT_TREE) == 0, let treePtr {
-                    defer { git_tree_free(treePtr) }
-                    var entry: OpaquePointer?
-                    if git_tree_entry_bypath(&entry, treePtr, path) == 0, let entry {
-                        defer { git_tree_entry_free(entry) }
-                        var indexEntry = git_index_entry()
-                        indexEntry.path = git_tree_entry_name(entry)
-                        if let oid = git_tree_entry_id(entry) { indexEntry.id = oid.pointee }
-                        indexEntry.mode = git_tree_entry_filemode_raw(entry).rawValue
-                        _ = git_index_add(idx.raw, &indexEntry)
-                    } else {
-                        // New file not yet in HEAD — remove from index
-                        _ = git_index_remove_bypath(idx.raw, path)
-                    }
-                }
-            } else {
-                // No HEAD (initial commit) — remove from index
-                _ = git_index_remove_bypath(idx.raw, path)
-            }
+        var targetObject: OpaquePointer?
+        let hasHead = git_revparse_single(&targetObject, pointer, "HEAD") == 0
+        defer {
+            if let targetObject { git_object_free(targetObject) }
         }
 
-        if let headCommitPtr { git_object_free(headCommitPtr) }
+        if hasHead, let targetObject {
+            let cStrings = paths.map { strdup($0) }
+            defer {
+                for cString in cStrings { free(cString) }
+            }
+
+            let result = cStrings.withUnsafeBufferPointer { buffer -> Int32 in
+                var pathspecs = git_strarray(
+                    strings: UnsafeMutablePointer(mutating: buffer.baseAddress),
+                    count: paths.count
+                )
+                return git_reset_default(pointer, targetObject, &pathspecs)
+            }
+
+            guard result == 0 else {
+                throw GittyError(message: "Could not unstage selected files")
+            }
+            return
+        }
+
+        for path in paths {
+            _ = git_index_remove_bypath(idx.raw, path)
+        }
 
         guard git_index_write(idx.raw) == 0 else {
             throw GittyError(message: "Could not write index after unstage")
